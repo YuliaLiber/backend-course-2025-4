@@ -1,11 +1,8 @@
-// main.js
-// Варіант 2 — flights-1m.json
-// Приймає параметри: -i (input), -h (host), -p (port)
-
+// main.js (robust JSON/NDJSON reader, fast-xml-parser v5)
 const http = require('http');
 const fs = require('fs');
 const { program } = require('commander');
-const { j2xParser } = require('fast-xml-parser');
+const { XMLBuilder } = require('fast-xml-parser');
 const { URL } = require('url');
 const path = require('path');
 
@@ -26,7 +23,7 @@ if (!fs.existsSync(inputFile)) {
   process.exit(1);
 }
 
-const xmlBuilder = new j2xParser({ format: true, indentBy: '  ' });
+const xmlBuilder = new XMLBuilder({ format: true, indentBy: '  ' });
 
 function findRecords(obj) {
   if (Array.isArray(obj)) return obj;
@@ -43,6 +40,31 @@ function findRecords(obj) {
   return [];
 }
 
+// Спроба №1: звичайний JSON.parse
+function tryParseAsJSONArray(text) {
+  try {
+    const json = JSON.parse(text);
+    return findRecords(json);
+  } catch {
+    return null;
+  }
+}
+
+// Спроба №2: NDJSON (кожен рядок — окремий JSON-об’єкт)
+function tryParseAsNDJSON(text) {
+  const lines = text.split(/\r?\n/).filter(Boolean);
+  const out = [];
+  for (const line of lines) {
+    try {
+      const obj = JSON.parse(line);
+      out.push(obj);
+    } catch {
+      // якщо рядок не JSON — ігноруємо
+    }
+  }
+  return out.length ? out : null;
+}
+
 const server = http.createServer(async (req, res) => {
   try {
     const fullUrl = new URL(req.url, `http://${host}:${port}`);
@@ -53,24 +75,27 @@ const server = http.createServer(async (req, res) => {
     let content;
     try {
       content = await fs.promises.readFile(inputFile, 'utf8');
-    } catch (e) {
+      // прибираємо можливий BOM
+      if (content.charCodeAt(0) === 0xFEFF) content = content.slice(1);
+    } catch {
       console.error('Cannot find input file');
       res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' });
       res.end('Cannot find input file');
       return;
     }
 
-    let json;
-    try {
-      json = JSON.parse(content);
-    } catch {
+    // Парсимо: JSON масив → якщо ні, тоді NDJSON
+    let records = tryParseAsJSONArray(content);
+    if (!records) {
+      records = tryParseAsNDJSON(content);
+    }
+    if (!records) {
       res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' });
       res.end('Invalid JSON');
       return;
     }
 
-    const records = findRecords(json);
-
+    // Фільтрація за airtime_min
     const filtered = records.filter(r => {
       const at = r?.AIR_TIME ?? r?.air_time ?? r?.AirTime ?? null;
       if (airtimeMin != null) {
@@ -79,15 +104,19 @@ const server = http.createServer(async (req, res) => {
       return true;
     });
 
+    // Формуємо об’єкти для XML
     const xmlFlights = filtered.map(r => {
       const obj = {};
-      if (showDate && (r.FL_DATE || r.date)) obj.date = r.FL_DATE || r.date;
-      if (r.AIR_TIME || r.air_time) obj.air_time = r.AIR_TIME || r.air_time;
-      if (r.DISTANCE || r.distance) obj.distance = r.DISTANCE || r.distance;
+      const dateVal = r.FL_DATE ?? r.date;
+      const airVal = r.AIR_TIME ?? r.air_time ?? r.AirTime;
+      const distVal = r.DISTANCE ?? r.distance ?? r.Distance;
+      if (showDate && dateVal != null) obj.date = String(dateVal);
+      if (airVal != null) obj.air_time = String(airVal);
+      if (distVal != null) obj.distance = String(distVal);
       return obj;
     });
 
-    const xml = xmlBuilder.parse({ flights: { flight: xmlFlights } });
+    const xml = xmlBuilder.build({ flights: { flight: xmlFlights } });
 
     const outPath = path.join(process.cwd(), 'output.xml');
     await fs.promises.writeFile(outPath, xml, 'utf8');
