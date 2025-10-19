@@ -4,8 +4,10 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
-  },
+  "start": "node main.js -i flights-1m.json -h 127.0.0.1 -p 3000",
+  "dev": "nodemon --watch . --exec \"node main.js -i flights-1m.json -h 127.0.0.1 -p 3000\""
+},
+
   "repository": {
     "type": "git",
     "url": "git+https://github.com/YuliaLiber/backend-course-2025-4.git"
